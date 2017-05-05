@@ -482,9 +482,12 @@ public class ImsManager {
                     imsManager.turnOffIms();
                 }
 
-                // Force IMS to register over LTE when turning off WFC
+                TelephonyManager tm = (TelephonyManager) context
+                        .getSystemService(Context.TELEPHONY_SERVICE);
                 setWfcModeInternal(context, enabled
-                        ? getWfcMode(context)
+                        // Choose wfc mode per current roaming preference
+                        ? getWfcMode(context, tm.isNetworkRoaming())
+                        // Force IMS to register over LTE when turning off WFC
                         : ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED);
             } catch (ImsException e) {
                 loge("setWfcSetting(): ", e);
@@ -543,6 +546,11 @@ public class ImsManager {
      */
     public static void setWfcMode(Context context, int wfcMode, boolean roaming) {
         if (!roaming) {
+            if(getBooleanCarrierConfig(context,
+                        CarrierConfigManager.KEY_CARRIER_WFC_ONLY_CELL_PREF_IN_HOME_NET_BOOL)) {
+                wfcMode = ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED;
+            }
+
             if (DBG) log("setWfcMode - setting=" + wfcMode);
             android.provider.Settings.Global.putInt(context.getContentResolver(),
                     android.provider.Settings.Global.WFC_IMS_MODE, wfcMode);
@@ -653,8 +661,9 @@ public class ImsManager {
     private static boolean isGbaValid(Context context) {
         if (getBooleanCarrierConfig(context,
                 CarrierConfigManager.KEY_CARRIER_IMS_GBA_REQUIRED_BOOL)) {
-            final TelephonyManager telephonyManager = TelephonyManager.getDefault();
-            String efIst = telephonyManager.getIsimIst();
+            TelephonyManager tm = (TelephonyManager)
+                context.getSystemService(Context.TELEPHONY_SERVICE);
+            String efIst = tm.getIsimIst();
             if (efIst == null) {
                 loge("ISF is NULL");
                 return true;
@@ -754,7 +763,9 @@ public class ImsManager {
      */
     public static void updateImsServiceConfig(Context context, int phoneId, boolean force) {
         if (!force) {
-            if (TelephonyManager.getDefault().getSimState() != TelephonyManager.SIM_STATE_READY) {
+            TelephonyManager tm = (TelephonyManager)
+                context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (tm.getSimState() != TelephonyManager.SIM_STATE_READY) {
                 log("updateImsServiceConfig: SIM not ready");
                 // Don't disable IMS if SIM is not ready
                 return;
@@ -832,8 +843,11 @@ public class ImsManager {
         boolean enabled = isVtEnabledByUser(mContext);
         boolean isNonTty = isNonTtyOrTtyOnVolteEnabled(mContext);
         boolean isDataEnabled = isDataEnabled();
+        boolean ignoreDataEnabledChanged = getBooleanCarrierConfig(mContext,
+                CarrierConfigManager.KEY_IGNORE_DATA_ENABLED_CHANGED_FOR_VIDEO_CALLS);
 
-        boolean isFeatureOn = available && enabled && isNonTty && isDataEnabled;
+        boolean isFeatureOn = available && enabled && isNonTty
+                && (ignoreDataEnabledChanged || isDataEnabled);
 
         log("updateVideoCallFeatureValue: available = " + available
                 + ", enabled = " + enabled
@@ -857,7 +871,9 @@ public class ImsManager {
      * @throws ImsException
      */
     private boolean updateWfcFeatureAndProvisionedValues() throws ImsException {
-        boolean isNetworkRoaming = TelephonyManager.getDefault().isNetworkRoaming();
+        TelephonyManager tm = (TelephonyManager)
+                mContext.getSystemService(Context.TELEPHONY_SERVICE);
+        boolean isNetworkRoaming = tm.isNetworkRoaming();
         boolean available = isWfcEnabledByPlatform(mContext);
         boolean enabled = isWfcEnabledByUser(mContext);
         displayWfcMode(mContext, true);
@@ -881,8 +897,10 @@ public class ImsManager {
         if (!isFeatureOn) {
             mode = ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED;
             roaming = false;
+            setWfcModeInternal(mContext, mode);
+        } else {
+            setWfcMode(mContext, mode, isNetworkRoaming);
         }
-        setWfcModeInternal(mContext, mode);
         setWfcRoamingSettingInternal(mContext, roaming);
 
         return isFeatureOn;
@@ -1449,8 +1467,10 @@ public class ImsManager {
                         TelephonyManager.NETWORK_TYPE_LTE, turnOn ? 1 : 0, mImsConfigListener);
 
                 if (isVtEnabledByPlatform(mContext)) {
+                    boolean ignoreDataEnabledChanged = getBooleanCarrierConfig(mContext,
+                            CarrierConfigManager.KEY_IGNORE_DATA_ENABLED_CHANGED_FOR_VIDEO_CALLS);
                     boolean enableViLte = turnOn && isVtEnabledByUser(mContext) &&
-                            isDataEnabled();
+                            (ignoreDataEnabledChanged || isDataEnabled());
                     config.setFeatureValue(ImsConfig.FeatureConstants.FEATURE_TYPE_VIDEO_OVER_LTE,
                             TelephonyManager.NETWORK_TYPE_LTE,
                             enableViLte ? 1 : 0,
@@ -1518,7 +1538,7 @@ public class ImsManager {
     /**
      * Adapter class for {@link IImsRegistrationListener}.
      */
-    private class ImsRegistrationListenerProxy extends IImsRegistrationListener.Stub {
+    private static class ImsRegistrationListenerProxy extends IImsRegistrationListener.Stub {
         private int mServiceClass;
         private ImsConnectionStateListener mListener;
 
@@ -1803,6 +1823,8 @@ public class ImsManager {
         pw.println("  mConfigUpdated = " + mConfigUpdated);
         pw.println("  mImsService = " + mImsService);
         pw.println("  mDataEnabled = " + isDataEnabled());
+        pw.println("  ignoreDataEnabledChanged = " + getBooleanCarrierConfig(mContext,
+                CarrierConfigManager.KEY_IGNORE_DATA_ENABLED_CHANGED_FOR_VIDEO_CALLS));
 
         pw.println("  isGbaValid = " + isGbaValid(mContext));
         pw.println("  isImsTurnOffAllowed = " + isImsTurnOffAllowed());
